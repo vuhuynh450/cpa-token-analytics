@@ -12,5 +12,9 @@ plugin/*.so
 plugin/*.h
 dist/
 .DS_Store
-plugin/usage-report
-plugin/usage-report.test
+plugin/cpa-token-analytics
+plugin/cpa-token-analytics.test
+.slim/deepwork/
+.openchamber/
+.ignore
+docs/

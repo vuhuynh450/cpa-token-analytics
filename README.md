@@ -1,92 +1,172 @@
-# CPA Usage
+# CPA Token Analytics
 
-**本地优先，轻量运行。** A local-first, lightweight **CLIProxyAPI plugin** for token usage analytics.
+English | [Tiếng Việt](README.vi.md)
 
-- **本地优先**：用量数据保存在本机 SQLite，不上传第三方分析平台；插件仅随你的 CLIProxyAPI 运行。
-- **实时采集**：通过 `usage.handle` 插件回调，请求完成的瞬间写入数据库——无轮询、无队列窗口、不丢数据。
-- **零额外进程**：原生动态库（`.dylib` / `.so`）运行在 CPA 进程内，无需 Python、Node.js、Docker 或独立服务。
-- 真实 shadcn/ui 界面：Token 趋势、模型 / 匿名 Key / 请求明细与筛选。
+**Local-first, lightweight.** A local-first, lightweight **CLIProxyAPI plugin** for token usage analytics.
 
-**状态：v0.2.0 / CLIProxyAPI 7.x / macOS 与 Linux。MIT 开源。**
+- **Local-first**: usage data stays in an on-machine SQLite database and is never uploaded to third-party analytics platforms; the plugin runs only alongside your CLIProxyAPI.
+- **Real-time collection**: via the `usage.handle` plugin callback, each request is written to the database the moment it completes — no polling, no queue window, no data loss.
+- **Zero extra processes**: a native dynamic library (`.dylib` / `.so`) running inside the CPA process — no Python, Node.js, Docker, or standalone service required.
+- A real shadcn/ui interface: token trends, model / anonymized key / request-detail views, cost estimation, model performance, and a request inspector with filtering.
 
-## 安装
+**Status: v0.4.0 / CLIProxyAPI 7.x+ / macOS, Linux and Windows. MIT licensed.**
 
-### 插件商店（推荐）
+## Features
 
-1. 在 `cliproxyapi.conf` 中添加插件商店源与插件配置：
+- **Live analytics**: the dashboard polls a lightweight revision endpoint (`/api/changes`) and only refetches real data when new usage events arrive — near-realtime without WebSockets or heavy queries. Interval selectable (3/5/10 s) or paused; auto-pauses on hidden tabs.
+- **Cost Analytics**: estimated API-equivalent USD cost computed from the synced pricing catalog and per-event token counters, with historical price snapshots, per-model overrides, partial/unpriced coverage indicators, and USD→VND conversion. Estimates are not actual provider bills — OAuth/subscription traffic may be billed differently by the provider.
+- **Automatic model pricing**: catalog synced from Models.dev with a LiteLLM fallback, matched per request via exact/alias/normalized resolution, plus manual price overrides.
+- **Automatic USD/VND exchange rate**: fetched from ExchangeRate-API (Fawaz currency-api fallback), cached in SQLite with source/timestamp metadata; manual mode available for a fixed rate.
+- **Model Performance**: per-model request counts, latency, TTFT, and percentile views.
+- **Usage Comparison**: current vs. previous period statistics (today/7d/30d/custom, elapsed or full-period).
+- **Advanced Charts**: usage heatmap, top models, token distribution, performance trends.
+- **Request Inspector**: paginated, filterable per-request view — status, latency, token and cost thresholds, search — with a detail dialog for token breakdown, timing and estimated cost.
+
+## Requirements
+
+- CLIProxyAPI with native plugin support (plugin API ≥ schema version used by `management.register`; tested against CLIProxyAPI 7.x/8.x).
+- A supported OS/architecture listed under [Supported platforms](#supported-platforms).
+- No extra services, no database server, no API keys: everything runs inside the CPA process and stores data locally.
+
+## Installation
+
+### Install via a custom Plugin Store (recommended)
+
+1. Open the **CLIProxyAPI Management Panel** → **Plugin settings** → **Third-Party Plugin Sources**.
+2. Add the registry URL:
+
+   ```
+   https://raw.githubusercontent.com/vuhuynh450/cpa-token-analytics/main/plugin-store/registry.json
+   ```
+
+3. Save the source list.
+4. Open **Plugin Store** → find **CPA Token Analytics** → **Install**.
+5. Enable and configure the plugin (see [Configuration](#configuration)).
+6. Open the dashboard at `/v0/resource/plugins/cpa-token-analytics/report`.
+
+> The registry URL only works once this repository is public **and** a release with plugin assets exists — the store installs plugin binaries from GitHub release attachments, not from the registry itself. The `version` field in `registry.json` is a display fallback only; the latest GitHub release is the source of truth.
+
+The equivalent `cliproxyapi.conf` setup, if you prefer configuring by file:
 
 ```yaml
 plugins:
   enabled: true
   store-sources:
-    - "https://gist.githubusercontent.com/andyWang1688/dd3211dbf2af7e9c3c05f4319014ec99/raw/registry.json"
+    - "https://raw.githubusercontent.com/vuhuynh450/cpa-token-analytics/main/plugin-store/registry.json"
   configs:
-    usage-report:
+    cpa-token-analytics:
       enabled: true
-      db_path: "~/.cli-proxy-api/usage-report/usage.sqlite"
 ```
 
-2. 重启 CLIProxyAPI，打开管理面板 → **插件商店** → 找到 **CPA Usage Report** → 安装。
-3. 打开 **插件 → Usage Report**（或访问 `/v0/resource/plugins/usage-report/report`）。页面首次打开时会提示输入 **CPA 管理密钥**（保存在浏览器本地，用于访问受保护的插件 API）。
+> CPA queries the GitHub API for plugin info under anonymous rate limits; if you hit a rate limit, set a `GITHUB_TOKEN` environment variable for the CPA process and add a `type: github-token`, `token-env: GITHUB_TOKEN` rule under `plugins.store-auth`.
 
-> CPA 访问 GitHub API 查插件信息有匿名频率限制；若遇到 rate limit，可为 CPA 进程配置 `GITHUB_TOKEN` 环境变量，并在 `plugins.store-auth` 添加 `type: github-token`、`token-env: GITHUB_TOKEN` 的规则。
+### Manual installation (offline)
 
-### 手动安装（离线）
-
-从 [Releases](https://github.com/andyWang1688/cpa-usage/releases) 下载对应平台的 `usage-report_{version}_{goos}_{goarch}.zip`，解压后放入插件目录：
+Download the `cpa-token-analytics_{version}_{goos}_{goarch}.zip` matching your platform from [Releases](https://github.com/vuhuynh450/cpa-token-analytics/releases), unzip it, and place it into the plugins directory:
 
 ```bash
-unzip usage-report_0.2.0_darwin_arm64.zip
+unzip cpa-token-analytics_0.4.0_darwin_arm64.zip
 mkdir -p <plugins-dir>/darwin/arm64
-cp usage-report-v0.2.0.dylib <plugins-dir>/darwin/arm64/
-# Linux 为 .so，目录名相应为 linux/amd64 或 linux/arm64
+cp cpa-token-analytics-v0.4.0.dylib <plugins-dir>/darwin/arm64/
+# Linux uses .so, with directory names linux/amd64 or linux/arm64 accordingly
 ```
 
-或从源码构建：
+Or build from source:
 
 ```sh
 cd plugin
-go build -buildmode=c-shared -o usage-report.dylib .   # macOS；Linux 产物为 .so
+go build -buildmode=c-shared -o cpa-token-analytics.dylib .   # macOS; the Linux artifact is .so
 ```
 
-## 使用
+## Migrating from usage-report
 
-- 页面：`/v0/resource/plugins/usage-report/report`
-- 数据 API（需认证）：`/v0/management/plugins/usage-report/api/usage?start=YYYY-MM-DD&end=YYYY-MM-DD&bucket=day|hour|month`，请求头 `Authorization: Bearer <管理密钥>`
-- 任何经过该 CPA 实例的请求（Codex CLI、OpenCode、其他客户端）都会自动记录。
+The plugin was formerly distributed as `usage-report`; it is now an independent plugin with the id `cpa-token-analytics` (the official store already carries a different `usage-report` plugin). Existing data is safe:
 
-界面能力：
+1. **Database.** The new default SQLite file is `~/.cli-proxy-api/cpa-token-analytics.sqlite`. On first launch, if the new file does not exist but `~/.cli-proxy-api/usage-report.sqlite` does, the plugin **copies** the old database to the new location — the old file is preserved untouched (nothing is deleted). If you would rather keep using the old file in place, set `plugins.configs.cpa-token-analytics.db_path` to point at it.
+2. **Config key.** Rename `plugins.configs.usage-report` to `plugins.configs.cpa-token-analytics` in `cliproxyapi.conf` (or the management panel equivalent).
+3. **Disable the old plugin.** Remove or disable `usage-report` so the two plugins do not collect the same traffic at once.
+4. **Everything travels together.** Pricing catalogs, FX rates, cost estimates, and request history all live in the same SQLite file, so they carry over with it.
 
-- 今天、近 7/30 天与自定义日期范围；模型筛选同时作用于 KPI、趋势和明细。
-- 缓存输入 / 净输入 / 输出堆叠趋势，小时 / 天 / 月粒度。
-- 模型、匿名 Key、请求三个视角；搜索、排序与分页。
-- 全部请求参与成功率统计，包括零 Token 失败；输入含缓存，输出含推理，不重复相加。
-- 错误、空数据与采集异常明确显示，不把空白或旧数据当实时成功。
-- 不预置价格，不把未知模型的用量伪装成实际账单。
+Routes move from `/v0/{resource,management}/plugins/usage-report/...` to `/v0/{resource,management}/plugins/cpa-token-analytics/...` — update any bookmarks or scripts that call the API directly.
 
-## 配置
+## Usage
 
-| 字段 | 说明 |
+- Page: `/v0/resource/plugins/cpa-token-analytics/report`
+- Data API (authentication required): `/v0/management/plugins/cpa-token-analytics/api/usage?start=YYYY-MM-DD&end=YYYY-MM-DD&bucket=day|hour|month`, with header `Authorization: Bearer <management key>`
+- Any request passing through this CPA instance (Codex CLI, OpenCode, other clients) is recorded automatically.
+
+UI capabilities:
+
+- Overview, cost, performance, comparison, request-inspector, and pricing sections; live updates can be paused or slowed (3/5/10 s).
+- Today, last 7/30 days, and custom date ranges; the model filter applies to KPIs, trends, and details at once.
+- Stacked trends of cached input / net input / output, at hour / day / month granularity.
+- Perspectives by model, anonymized key, and individual request — with search, sorting, pagination, and advanced request filters (status, latency, token size, cost).
+- Automatic cost estimation from a synced pricing catalog plus per-request latency, TTFT and output-speed metrics; unknown-model usage is never disguised as an actual bill.
+- All requests count toward success-rate statistics, including zero-token failures; input includes cached tokens, output includes reasoning tokens, without double counting.
+- Errors, empty data, and collection anomalies are displayed explicitly — blank or stale data is never presented as live success.
+
+## Internationalization
+
+The UI is bilingual — English and Vietnamese (Tiếng Việt):
+
+- A language switcher (Select) sits in the header, next to the dark/light theme toggle.
+- The selection is persisted in the browser via the `cpa-usage-locale` localStorage key.
+- Default: read localStorage first; if unset, the browser language decides — `vi*` maps to Tiếng Việt, everything else to English.
+- Numbers and dates are formatted per locale (`en-US` / `vi-VN`); both languages share the same underlying data.
+
+## Configuration
+
+| Field | Description |
 |---|---|
-| `plugins.configs.usage-report.enabled` | 是否启用插件 |
-| `plugins.configs.usage-report.db_path` | SQLite 路径，默认 `~/.cli-proxy-api/usage-report/usage.sqlite` |
-| `plugins.store-sources` | 插件商店 registry 地址（安装/更新用） |
+| `plugins.configs.cpa-token-analytics.enabled` | Whether to enable the plugin |
+| `plugins.configs.cpa-token-analytics.db_path` | SQLite path, defaults to `~/.cli-proxy-api/cpa-token-analytics.sqlite` |
+| `plugins.store-sources` | Plugin store registry addresses (for install/update) |
 
-## 数据与安全
+## Supported platforms
 
-- 用量事件保存在 `db_path` 指向的本地 SQLite（表 `usage_events`），页面 API 在返回前将 Key 转换为稳定的匿名分组（`key-xxxxxxxxxx` 或 `未知 Key`）。
-- 原始事件仅保存在本地，可能包含客户端 Key；不要将数据库公开上传。
-- 插件的资源页面无独立鉴权，仅在 CPA 管理域内可达；请勿将 CPA 管理端口暴露到公网。
+Releases ship one zip per platform — `cpa-token-analytics_{version}_{goos}_{goarch}.zip` — plus a `checksums.txt` for integrity verification, following CLIProxyAPI plugin-store conventions:
 
-## 开发
+- `linux/amd64`, `linux/arm64`
+- `darwin/amd64`, `darwin/arm64`
+- `windows/amd64`
+
+## SQLite location
+
+By default, usage events are written to `~/.cli-proxy-api/cpa-token-analytics.sqlite` (WAL mode). Override with `plugins.configs.cpa-token-analytics.db_path`. Uninstalling the plugin does **not** remove `~/.cli-proxy-api/*.sqlite` files.
+
+## Privacy
+
+Local-first by design: usage events, keys, cost data, and request history never leave this machine. API keys are shown only as stable anonymized groups (`key-xxxxxxxxxx`, sha256-based) or `Unknown Key`. The only outbound traffic is the optional pricing-catalog and FX-rate fetches used for cost estimation — no usage data is ever sent out.
+
+## Offline operation
+
+The dashboard and all analytics run fully offline. Only the pricing catalog and FX-rate sync features reach out to external services; without them everything still works, cost fields just show as unavailable.
+
+## Updating
+
+Installations via the Plugin Store track the latest GitHub release: refresh the store list and press **Update** when a newer release appears. For manual installs, download the new zip and replace the library file.
+
+## Troubleshooting
+
+- **Plugin does not load**: check that the binary matches your `goos`/`goarch` (and glibc version on Linux — the plugin is a native shared library). A wrong-architecture or incompatible library fails to load without touching your data.
+- **Plugin missing from the store list**: the registry URL must be reachable and the repo public; confirm the source was saved under Third-Party Plugin Sources.
+- **Rate-limited installs**: set `GITHUB_TOKEN` and a `plugins.store-auth` rule as described above.
+
+## Data & Security
+
+- Usage events are stored in the local SQLite database pointed to by `db_path` (table `usage_events`); the page API converts keys into stable anonymized groups (`key-xxxxxxxxxx` or `Unknown Key`) before returning data.
+- Raw events stay local only and may contain client keys — do not upload the database anywhere public.
+- The plugin's resource page has no standalone authentication and is only reachable inside the CPA management domain; do not expose the CPA management port to the public internet.
+
+## Development
 
 ```sh
 cd plugin
-GOPROXY=https://goproxy.cn,direct go test ./...       # 单元测试
-go build -buildmode=c-shared -o usage-report.dylib .  # macOS；Linux 为 .so
+go test ./...                                             # unit tests
+go build -buildmode=c-shared -o cpa-token-analytics.dylib .  # macOS; .so on Linux
 ```
 
-页面资源位于 `plugin/web/`，来自本仓库 `frontend/` 的构建产物：
+Page assets live in `plugin/web/`, produced from this repository's `frontend/` build:
 
 ```sh
 cd frontend && npm ci && npm run build
@@ -94,20 +174,20 @@ cp dist/index.html ../plugin/web/index.html
 cp dist/assets/* ../plugin/web/assets/
 ```
 
-> 替换前端后需同步更新 `plugin/main.go` 中 embed 的文件名与 `management.register` 的资源路由（构建产物带 hash 文件名）。
+> After replacing the frontend you must sync the embedded file names in `plugin/main.go` and the resource route in `management.register` (build artifacts carry hashed file names).
 
-### 发布新版本
+### Releasing a new version
 
-版本号存于 `VERSION`，与 git tag（`v{version}`）一致。推送 tag 即触发 Release 流水线：五个平台（darwin/arm64、darwin/amd64、linux/amd64、linux/arm64、windows/amd64）构建插件并注入版本号、生成 `checksums.txt` 并发布 Release。
+The version number lives in `VERSION` and matches the git tag (`v{version}`). Pushing a tag triggers the Release pipeline: it builds the plugin for five platforms (darwin/arm64, darwin/amd64, linux/amd64, linux/arm64, windows/amd64), injects the version number, generates `checksums.txt`, and publishes the Release.
 
 ```sh
-# 1. 更新 VERSION、CHANGELOG.md，提交并合并到 main
-# 2. 打 tag 推送，流水线自动发布
-git tag v0.3.4
-git push origin v0.3.4
-# 3. 更新插件商店 registry 中的 version 字段
+# 1. Update VERSION and CHANGELOG.md, commit and merge to main
+# 2. Tag and push; the pipeline publishes automatically
+git tag v0.4.0
+git push origin v0.4.0
+# 3. Update the version field in the plugin store registry
 ```
 
 ## License
 
-[MIT](LICENSE)。界面组件基于 [shadcn/ui](https://github.com/shadcn-ui/ui)（MIT），见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+[MIT](LICENSE). UI components are based on [shadcn/ui](https://github.com/shadcn-ui/ui) (MIT); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -1,12 +1,13 @@
 {
-  "name": "cpa-usage-ui",
+  "name": "cpa-token-analytics-ui",
   "private": true,
   "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node --test src/*.test.js"
+    "test": "node --test src/*.test.js",
+    "sync:plugin": "bash ../scripts/sync-frontend.sh"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.0",

@@ -1,4 +1,4 @@
-module usage-report
+module cpa-token-analytics
 
 go 1.27
 

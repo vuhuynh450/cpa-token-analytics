@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,9 +23,9 @@ func TestRegister(t *testing.T) {
 func mgmtReq(path, method string) []byte {
 	req, _ := json.Marshal(map[string]interface{}{
 		"result": map[string]interface{}{
-			"Method": method,
-			"Path":   path,
-			"Query":  map[string][]string{"start": {"2026-09-09"}, "end": {"2026-09-18"}, "bucket": {"day"}},
+			"Method":  method,
+			"Path":    path,
+			"Query":   map[string][]string{"start": {"2026-09-09"}, "end": {"2026-09-18"}, "bucket": {"day"}},
 			"Headers": map[string][]string{},
 			"Body":    nil,
 		},
@@ -57,17 +59,65 @@ func callMgmt(t *testing.T, path, method string) (int, string, []byte) {
 }
 
 func TestManagementReport(t *testing.T) {
-	status, ct, body := callMgmt(t, "/v0/resource/plugins/usage-report/report", "GET")
+	status, ct, body := callMgmt(t, "/v0/resource/plugins/cpa-token-analytics/report", "GET")
 	if status != 200 || len(body) < 300 {
 		t.Fatalf("page: %d %s %d bytes", status, ct, len(body))
 	}
 	t.Logf("page ok: %d bytes, %s", len(body), ct)
 
-	status, ct, js := callMgmt(t, "/v0/resource/plugins/usage-report/assets/index-x8ooMryE.js", "GET")
+	entries, err := fs.ReadDir(webFS, "web/assets")
+	if err != nil {
+		t.Fatalf("read embedded assets: %v", err)
+	}
+	jsName := ""
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".js") {
+			jsName = e.Name()
+			break
+		}
+	}
+	if jsName == "" {
+		t.Fatal("no .js asset embedded under web/assets")
+	}
+
+	status, ct, js := callMgmt(t, "/v0/resource/plugins/cpa-token-analytics/assets/"+jsName, "GET")
 	if status != 200 || len(js) < 100000 {
 		t.Fatalf("js: %d %s %d bytes", status, ct, len(js))
 	}
-	t.Logf("js ok: %d bytes, %s", len(js), ct)
+	t.Logf("js ok: %s %d bytes, %s", jsName, len(js), ct)
+
+	cssName := ""
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".css") {
+			cssName = e.Name()
+			break
+		}
+	}
+	if cssName == "" {
+		t.Fatal("no .css asset embedded under web/assets")
+	}
+	status, ct, css := callMgmt(t, "/v0/resource/plugins/cpa-token-analytics/assets/"+cssName, "GET")
+	if status != 200 || !strings.HasPrefix(ct, "text/css") || len(css) < 1000 {
+		t.Fatalf("css: %d %s %d bytes", status, ct, len(css))
+	}
+	t.Logf("css ok: %s %d bytes, %s", cssName, len(css), ct)
+
+	status, _, _ = callMgmt(t, "/v0/resource/plugins/cpa-token-analytics/assets/../main.go", "GET")
+	if status != 404 {
+		t.Fatalf("path traversal must return 404, got %d", status)
+	}
+	raw, err := handleMethod("management.handle",
+		mgmtReq("/v0/resource/plugins/cpa-token-analytics/assets/missing.js", "GET"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var miss envelope
+	if err := json.Unmarshal(raw, &miss); err != nil {
+		t.Fatal(err)
+	}
+	if miss.OK || miss.Error == nil || miss.Error.Code != "asset_missing" {
+		t.Fatalf("missing asset must return asset_missing envelope: %s", raw)
+	}
 }
 
 func TestManagementAPI(t *testing.T) {
@@ -76,7 +126,7 @@ func TestManagementAPI(t *testing.T) {
 	if _, err := handleMethod("usage.handle", seed); err != nil {
 		t.Fatal(err)
 	}
-	status, _, body := callMgmt(t, "/v0/management/plugins/usage-report/api/usage", "GET")
+	status, _, body := callMgmt(t, "/v0/management/plugins/cpa-token-analytics/api/usage", "GET")
 	if status != 200 {
 		t.Fatalf("usage api: %d %s", status, body)
 	}
@@ -117,6 +167,36 @@ func TestUsageHandle(t *testing.T) {
 	t.Logf("usage.handle wrote %d row", n)
 }
 
+// The rebrand renamed the default DB file to cpa-token-analytics.sqlite;
+// ensureDB copies a legacy usage-report.sqlite on first open without
+// touching or deleting the original.
+func TestLegacyDBMigration(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "usage-report.sqlite")
+	fresh := filepath.Join(dir, "cpa-token-analytics.sqlite")
+	want := []byte("sqlite-legacy-payload")
+	if err := os.WriteFile(legacy, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrateLegacyDB(legacy, fresh)
+	got, err := os.ReadFile(fresh)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("migrated db: %q err=%v", got, err)
+	}
+	if orig, _ := os.ReadFile(legacy); string(orig) != string(want) {
+		t.Fatal("legacy db must be left untouched")
+	}
+	// Second run must not overwrite an existing new file.
+	other := []byte("sqlite-new-payload")
+	if err := os.WriteFile(fresh, other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	migrateLegacyDB(legacy, fresh)
+	if got, _ := os.ReadFile(fresh); string(got) != string(other) {
+		t.Fatal("migration must not overwrite an existing new db")
+	}
+}
+
 func TestApplyConfig(t *testing.T) {
 	tmp := t.TempDir()
 	direct := []byte(`{"config_yaml":"enabled: true\ndb_path: \"` + tmp + `/direct.sqlite\"\n"}`)
@@ -152,14 +232,14 @@ func TestManagementRegisterRoutes(t *testing.T) {
 	if err := json.Unmarshal(e.Result, &reg); err != nil {
 		t.Fatal(err)
 	}
-	if len(reg.Routes) != 3 {
-		t.Fatalf("expect 3 authenticated routes, got %d", len(reg.Routes))
+	if len(reg.Routes) != 19 {
+		t.Fatalf("expect 19 authenticated routes, got %d", len(reg.Routes))
 	}
 	for _, r := range reg.Routes {
 		if r.Method != "GET" && r.Method != "POST" {
 			t.Fatalf("route %s missing explicit method", r.Path)
 		}
-		if !strings.HasPrefix(r.Path, "/plugins/usage-report/api/") {
+		if !strings.HasPrefix(r.Path, "/plugins/cpa-token-analytics/api/") {
 			t.Fatalf("route outside plugin namespace: %s", r.Path)
 		}
 	}

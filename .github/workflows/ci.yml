@@ -66,4 +66,4 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CC: ${{ matrix.cc }}
-        run: go build -buildmode=c-shared -o /tmp/usage-report-test.out .
+        run: go build -buildmode=c-shared -o /tmp/cpa-token-analytics-test.out .

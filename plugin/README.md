@@ -1,10 +1,10 @@
-# CPA Usage Report (CLIProxyAPI Plugin)
+# CPA Token Analytics (CLIProxyAPI Plugin)
 
 Local-first token usage dashboard for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), shipped as a native plugin (`.dylib`/`.so`) running inside the CPA process.
 
 - **Real-time collection**: receives every completed request through the `usage.handle` plugin callback — no polling, no data loss.
-- **Embedded dashboard**: the [cpa-usage](https://github.com/andyWang1688/cpa-usage) shadcn/ui frontend is bundled and served under `/v0/resource/plugins/usage-report/report`.
-- **SQLite storage**: usage events are stored locally in `usage.sqlite`.
+- **Embedded dashboard**: the bundled shadcn/ui frontend is served under `/v0/resource/plugins/cpa-token-analytics/report`.
+- **SQLite storage**: usage events are stored locally in `cpa-token-analytics.sqlite`.
 
 ## Install via CPA Plugin Store
 
@@ -14,27 +14,26 @@ Add this registry to `cliproxyapi.conf`:
 plugins:
   enabled: true
   store-sources:
-    - "https://raw.githubusercontent.com/andyWang1688/cpa-usage/main/plugin-store/registry.json"
+    - "https://raw.githubusercontent.com/vuhuynh450/cpa-token-analytics/main/plugin-store/registry.json"
   configs:
-    usage-report:
+    cpa-token-analytics:
       enabled: true
-      db_path: "~/.cli-proxy-api/usage-report/usage.sqlite"
 ```
 
-Then install from the management panel: **Plugin Store → CPA Usage Report → Install**.
+Then install from the management panel: **Plugin Store → CPA Token Analytics → Install**.
 
 ## Manual install
 
 ```bash
-go build -buildmode=c-shared -o usage-report.dylib .
+go build -buildmode=c-shared -o cpa-token-analytics.dylib .
 mkdir -p <plugins-dir>/<goos>/<goarch>
-cp usage-report.dylib <plugins-dir>/<goos>/<goarch>/
+cp cpa-token-analytics.dylib <plugins-dir>/<goos>/<goarch>/
 ```
 
 ## Dashboard
 
-- Page: `/v0/resource/plugins/usage-report/report`
-- API: `/v0/resource/plugins/usage-report/api/usage?start=YYYY-MM-DD&end=YYYY-MM-DD&bucket=day|hour|month`
+- Page: `/v0/resource/plugins/cpa-token-analytics/report`
+- API: `/v0/management/plugins/cpa-token-analytics/api/usage?start=YYYY-MM-DD&end=YYYY-MM-DD&bucket=day|hour|month`
 
 ## Frontend assets
 

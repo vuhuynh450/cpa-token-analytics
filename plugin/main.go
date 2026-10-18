@@ -63,6 +63,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -81,7 +82,7 @@ var webFS embed.FS
 const abiVersion uint32 = 1
 
 // version is injected at release time via -ldflags "-X main.version=..."
-var version = "0.2.1"
+var version = "0.4.0"
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -161,16 +162,32 @@ func handleMethod(method string, req []byte) ([]byte, error) {
 	switch method {
 	case "plugin.register", "plugin.reconfigure":
 		applyConfig(req)
-		return okEnvelopeJSON(`{"schema_version":1,"metadata":{"Name":"usage-report","Version":"` + version + `","Author":"local","GitHubRepository":"https://github.com/andyWang1688/cpa-usage","Logo":"","ConfigFields":[]},"capabilities":{"usage_plugin":true,"management_api":true}}`)
+		return okEnvelopeJSON(`{"schema_version":1,"metadata":{"Name":"cpa-token-analytics","Version":"` + version + `","Author":"vuhuynh450","GitHubRepository":"https://github.com/vuhuynh450/cpa-token-analytics","Logo":"","ConfigFields":[]},"capabilities":{"usage_plugin":true,"management_api":true}}`)
 	case "management.register":
 		return okEnvelopeJSON(`{"routes":[
-			{"Method":"GET","Path":"/plugins/usage-report/api/usage","Menu":"","Description":"usage data api"},
-			{"Method":"GET","Path":"/plugins/usage-report/api/health","Menu":"","Description":"health"},
-			{"Method":"POST","Path":"/plugins/usage-report/api/collect","Menu":"","Description":"collect trigger"}
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/usage","Menu":"","Description":"usage data api"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/health","Menu":"","Description":"health"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/collect","Menu":"","Description":"collect trigger"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/analytics/overview","Menu":"","Description":"analytics overview"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/analytics/performance","Menu":"","Description":"analytics performance"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/analytics/comparison","Menu":"","Description":"analytics comparison"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/analytics/heatmap","Menu":"","Description":"analytics heatmap"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/analytics/cost","Menu":"","Description":"analytics cost"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/pricing/status","Menu":"","Description":"pricing status"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/pricing/models","Menu":"","Description":"pricing catalog"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/pricing/sync","Menu":"","Description":"pricing sync"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/pricing/override","Menu":"","Description":"price override"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/pricing/settings","Menu":"","Description":"pricing settings"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/fx/status","Menu":"","Description":"fx rate status"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/fx/sync","Menu":"","Description":"fx rate sync"},
+			{"Method":"POST","Path":"/plugins/cpa-token-analytics/api/fx/settings","Menu":"","Description":"fx settings"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/changes","Menu":"","Description":"usage revision check"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/requests","Menu":"","Description":"request inspector list"},
+			{"Method":"GET","Path":"/plugins/cpa-token-analytics/api/requests/{id}","Menu":"","Description":"request inspector detail"}
 		],"resources":[
-			{"Path":"/report","Menu":"Usage Report","Description":"CPA usage dashboard"},
-			{"Path":"/assets/index-x8ooMryE.js","Menu":"","Description":"dashboard js"},
-			{"Path":"/assets/index-B7tZGLVi.css","Menu":"","Description":"dashboard css"}
+			{"Path":"/report","Menu":"CPA Token Analytics","Description":"CPA usage dashboard"},
+			{"Path":"/assets/index-C2Dxclol.js","Menu":"","Description":"dashboard js"},
+			{"Path":"/assets/index-CF7M4cm3.css","Menu":"","Description":"dashboard css"}
 		]}`)
 	case "usage.handle":
 		handleUsage(req)
@@ -225,7 +242,7 @@ func defaultDBPath() string {
 	if err != nil {
 		return "usage.sqlite"
 	}
-	return filepath.Join(u.HomeDir, ".cli-proxy-api", "usage-report.sqlite")
+	return filepath.Join(u.HomeDir, ".cli-proxy-api", "cpa-token-analytics.sqlite")
 }
 
 func openDB(path string) {
@@ -249,6 +266,14 @@ func openDB(path string) {
 		return
 	}
 	db = conn
+	if err := runMigrations(conn); err != nil {
+		// Keep the error so collect_err reports it; the partially-migrated
+		// connection stays usable (migrations are re-run on next open).
+		// lastOpened is only set after migrations succeed so the next
+		// openDB call retries instead of early-returning.
+		lastErr = "sqlite migrate: " + err.Error()
+		return
+	}
 	lastOpened = path
 	lastErr = ""
 }
@@ -257,8 +282,39 @@ var lastOpened string
 
 func ensureDB() {
 	if db == nil {
-		openDB(defaultDBPath())
+		path := defaultDBPath()
+		// First-open migration only applies to the default location; an
+		// explicit db_path (applyConfig -> openDB) is used exactly as given.
+		migrateLegacyDB(filepath.Join(filepath.Dir(path), "usage-report.sqlite"), path)
+		openDB(path)
 	}
+}
+
+// migrateLegacyDB copies the legacy pre-rebrand database file to newPath
+// when newPath does not exist yet. Additive and idempotent: the legacy
+// file is left untouched and an existing newPath is never overwritten.
+func migrateLegacyDB(legacyPath, newPath string) {
+	if _, err := os.Stat(newPath); err == nil {
+		return
+	}
+	src, err := os.Open(legacyPath)
+	if err != nil {
+		return
+	}
+	defer src.Close()
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		return
+	}
+	dst, err := os.OpenFile(newPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(newPath)
+		return
+	}
+	_ = dst.Close()
 }
 
 // ---- usage ----
@@ -292,13 +348,13 @@ func handleUsage(req []byte) {
 		ts = time.Now()
 	}
 	tokens := map[string]int64{
-		"input_tokens":           u.Detail.InputTokens,
-		"output_tokens":          u.Detail.OutputTokens,
-		"reasoning_tokens":       u.Detail.ReasoningTokens,
-		"cached_tokens":          u.Detail.CachedTokens,
-		"cache_read_tokens":      u.Detail.CacheReadTokens,
-		"cache_creation_tokens":  u.Detail.CacheCreationTokens,
-		"total_tokens":           u.Detail.TotalTokens,
+		"input_tokens":          u.Detail.InputTokens,
+		"output_tokens":         u.Detail.OutputTokens,
+		"reasoning_tokens":      u.Detail.ReasoningTokens,
+		"cached_tokens":         u.Detail.CachedTokens,
+		"cache_read_tokens":     u.Detail.CacheReadTokens,
+		"cache_creation_tokens": u.Detail.CacheCreationTokens,
+		"total_tokens":          u.Detail.TotalTokens,
 	}
 	source := u.Source
 	if source == "" {
@@ -319,9 +375,39 @@ func handleUsage(req []byte) {
 	}
 	digest := sha1.Sum(payload)
 	// Keep the existing dedup identity when adding optional protocol metadata.
-	if u.Provider != "" || u.ExecutorType != "" {
-		event["provider"] = u.Provider
-		event["executor_type"] = u.ExecutorType
+	statusCode := u.StatusCode
+	if statusCode == 0 {
+		statusCode = u.HTTPStatus
+	}
+	if statusCode == 0 {
+		statusCode = u.Status
+	}
+	authType := u.AuthType
+	if authType == "" {
+		authType = u.AccountType
+	}
+	if authType == "" {
+		proto := strings.ToLower(u.ExecutorType + " " + u.Provider)
+		for _, k := range []string{"oauth", "subscription", "account"} {
+			if strings.Contains(proto, k) {
+				authType = k
+				break
+			}
+		}
+	}
+	if u.Provider != "" || u.ExecutorType != "" || statusCode != 0 || authType != "" {
+		if u.Provider != "" {
+			event["provider"] = u.Provider
+		}
+		if u.ExecutorType != "" {
+			event["executor_type"] = u.ExecutorType
+		}
+		if statusCode != 0 {
+			event["status_code"] = statusCode
+		}
+		if authType != "" {
+			event["auth_type"] = authType
+		}
 		payload, err = json.Marshal(event)
 		if err != nil {
 			return
@@ -334,13 +420,18 @@ func handleUsage(req []byte) {
 	if db == nil {
 		return
 	}
-	_, _ = db.Exec("INSERT OR IGNORE INTO usage_events (ts, dedup, payload) VALUES (?,?,?)",
-		ts.Format("2006-01-02 15:04:05"), hex.EncodeToString(digest[:]), string(payload))
+	_, _ = db.Exec("INSERT OR IGNORE INTO usage_events (ts, dedup, payload, ts_unix) VALUES (?,?,?,?)",
+		ts.Format("2006-01-02 15:04:05"), hex.EncodeToString(digest[:]), string(payload), float64(ts.UnixNano())/1e9)
 }
 
 type usageRecord struct {
 	Provider        string
 	ExecutorType    string
+	StatusCode      int
+	HTTPStatus      int
+	Status          int
+	AuthType        string
+	AccountType     string
 	Model           string
 	Alias           string
 	APIKey          string
@@ -378,6 +469,7 @@ func handleManagement(req []byte) ([]byte, error) {
 		Method string
 		Path   string
 		Query  map[string][]string
+		Body   any
 	}
 	if err := json.Unmarshal(rec, &m); err != nil {
 		return errorEnvelope("bad_request", err.Error()), nil
@@ -390,22 +482,19 @@ func handleManagement(req []byte) ([]byte, error) {
 		}
 		return managementResponse(200, "text/html; charset=utf-8", html)
 	}
-	if strings.HasSuffix(m.Path, "/assets/index-x8ooMryE.js") {
-		js, err := webFS.ReadFile("web/assets/index-x8ooMryE.js")
+	if i := strings.LastIndex(m.Path, "/assets/"); i >= 0 {
+		name := m.Path[i+len("/assets/"):]
+		if name == "" || strings.Contains(name, "..") || strings.Contains(name, "/") {
+			return managementResponse(404, "text/plain; charset=utf-8", []byte("not found"))
+		}
+		data, err := webFS.ReadFile("web/assets/" + name)
 		if err != nil {
 			return errorEnvelope("asset_missing", err.Error()), nil
 		}
-		return managementResponse(200, "application/javascript; charset=utf-8", js)
-	}
-	if strings.HasSuffix(m.Path, "/assets/index-B7tZGLVi.css") {
-		css, err := webFS.ReadFile("web/assets/index-B7tZGLVi.css")
-		if err != nil {
-			return errorEnvelope("asset_missing", err.Error()), nil
-		}
-		return managementResponse(200, "text/css; charset=utf-8", css)
+		return managementResponse(200, assetContentType(name), data)
 	}
 	if strings.HasSuffix(m.Path, "/api/health") {
-		body, _ := json.Marshal(map[string]interface{}{"service": "cpa-usage", "version": version, "pid": 0})
+		body, _ := json.Marshal(map[string]interface{}{"service": "cpa-token-analytics", "version": version, "pid": 0})
 		return managementResponse(200, "application/json; charset=utf-8", body)
 	}
 	if strings.HasSuffix(m.Path, "/api/collect") {
@@ -421,7 +510,35 @@ func handleManagement(req []byte) ([]byte, error) {
 		}
 		return managementResponse(200, "application/json; charset=utf-8", body)
 	}
+	if strings.Contains(m.Path, "/api/analytics/") {
+		return handleAnalytics(m.Path, m.Query)
+	}
+	if strings.Contains(m.Path, "/api/pricing/") {
+		return handlePricing(m.Path, m.Method, m.Body)
+	}
+	if strings.Contains(m.Path, "/api/fx/") {
+		return handleFx(m.Path, m.Method, m.Body)
+	}
+	if strings.Contains(m.Path, "/api/changes") {
+		return handleChanges(m.Method)
+	}
+	if strings.Contains(m.Path, "/api/requests") {
+		return handleRequests(m.Path, m.Method, m.Query)
+	}
 	return managementResponse(404, "text/plain; charset=utf-8", []byte("not found"))
+}
+
+func assetContentType(name string) string {
+	switch {
+	case strings.HasSuffix(name, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(name, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(name, ".map"):
+		return "application/json"
+	default:
+		return "application/octet-stream"
+	}
 }
 
 func managementResponse(status int, contentType string, body []byte) ([]byte, error) {
@@ -449,20 +566,26 @@ type dbEvent struct {
 	Failed       bool           `json:"failed"`
 	LatencyMs    float64        `json:"latency_ms"`
 	TTFTMs       float64        `json:"ttft_ms"`
+	StatusCode   int            `json:"status_code"`
+	AuthType     string         `json:"auth_type"`
 	Tokens       map[string]any `json:"tokens"`
 }
 
 type outEvent struct {
-	Ts        float64 `json:"ts"`
-	Model     string  `json:"model"`
-	Key       string  `json:"key"`
-	Input     int64   `json:"input"`
-	Output    int64   `json:"output"`
-	Cache     int64   `json:"cache"`
-	Reasoning int64   `json:"reasoning"`
-	Failed    bool    `json:"failed"`
-	LatencyMs float64 `json:"latency_ms"`
-	TTFTMs    float64 `json:"ttft_ms"`
+	Ts         float64 `json:"ts"`
+	Model      string  `json:"model"`
+	Key        string  `json:"key"`
+	Input      int64   `json:"input"`
+	Output     int64   `json:"output"`
+	Cache      int64   `json:"cache"`
+	CacheWrite int64   `json:"cache_write"`
+	Reasoning  int64   `json:"reasoning"`
+	Failed     bool    `json:"failed"`
+	LatencyMs  float64 `json:"latency_ms"`
+	TTFTMs     float64 `json:"ttft_ms"`
+	Provider   string  `json:"provider"`
+	AuthType   string  `json:"auth_type,omitempty"`
+	StatusCode int     `json:"status_code,omitempty"`
 }
 
 type outBucket struct {
@@ -528,13 +651,14 @@ func usageResponse(q map[string][]string) ([]byte, error) {
 	bins := map[string]*outBucket{}
 	order := []string{}
 	skipped := 0
+	authSet := map[string]bool{}
 
 	ensureDB()
 	mu.Lock()
 	var rows *sql.Rows
 	var err error
 	if db != nil {
-		rows, err = db.Query("SELECT ts, payload FROM usage_events ORDER BY id")
+		rows, err = queryUsageRows(lo, hi)
 	}
 	mu.Unlock()
 	if err != nil {
@@ -543,8 +667,9 @@ func usageResponse(q map[string][]string) ([]byte, error) {
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
+			var id int64
 			var storedTs, payload string
-			if err := rows.Scan(&storedTs, &payload); err != nil {
+			if err := rows.Scan(&id, &storedTs, &payload); err != nil {
 				continue
 			}
 			var e dbEvent
@@ -552,69 +677,34 @@ func usageResponse(q map[string][]string) ([]byte, error) {
 				skipped++
 				continue
 			}
-			tsStr := e.Timestamp
-			if tsStr == "" {
-				tsStr = storedTs
-			}
-			ts, err := parseAnyTime(tsStr)
-			if err != nil {
+			row, ok := normalizeRow(e, storedTs)
+			if !ok {
 				skipped++
 				continue
 			}
-			if ts < lo || ts >= hi {
+			row.id = id
+			if row.ts < lo || row.ts >= hi {
 				continue
 			}
-			model := e.Model
-			if model == "" {
-				model = e.Alias
-			}
-			if model == "" {
-				model = "unknown"
-			}
-			source := e.Source
-			if source == "" {
-				source = e.APIKey
-			}
-			var input, output, cache, reasoning int64
-			if t := e.Tokens; t != nil {
-				input = toI64(t["input_tokens"])
-				output = toI64(t["output_tokens"])
-				read := toI64(t["cache_read_tokens"])
-				cached := toI64(t["cached_tokens"])
-				creation := toI64(t["cache_creation_tokens"])
-				cache = read
-				if cache == 0 && cached > 0 && creation == 0 {
-					cache = cached
-				}
-				reasoning = toI64(t["reasoning_tokens"])
-				if addInputCache(e, input, output, cache, creation, reasoning) {
-					input += cache + creation
-				}
+			if row.authType != "" {
+				authSet[row.authType] = true
 			}
 			events = append(events, outEvent{
-				Ts: ts, Model: model, Key: anonKey(source),
-				Input: input, Output: output, Cache: cache, Reasoning: reasoning,
-				Failed: e.Failed, LatencyMs: e.LatencyMs, TTFTMs: e.TTFTMs,
+				Ts: row.ts, Model: row.model, Key: row.key,
+				Input: row.input, Output: row.output, Cache: row.cache, CacheWrite: row.cacheWrite,
+				Reasoning: row.reasoning, Failed: row.failed, LatencyMs: row.latency, TTFTMs: row.ttft,
+				Provider: row.provider, AuthType: row.authType, StatusCode: row.statusCode,
 			})
-			t := time.Unix(int64(ts), 0)
-			var label string
-			switch bucket {
-			case "hour":
-				label = t.Format("2006-01-02 15") + ":00"
-			case "month":
-				label = t.Format("2006-01")
-			default:
-				label = t.Format("2006-01-02")
-			}
+			label := bucketLabel(time.Unix(int64(row.ts), 0), bucket)
 			bk := bins[label]
 			if bk == nil {
 				bk = &outBucket{Label: label}
 				bins[label] = bk
 				order = append(order, label)
 			}
-			bk.Input += input
-			bk.Output += output
-			bk.Cache += cache
+			bk.Input += row.input
+			bk.Output += row.output
+			bk.Cache += row.cache
 			bk.Requests++
 		}
 	}
@@ -633,6 +723,7 @@ func usageResponse(q map[string][]string) ([]byte, error) {
 		"version":      version,
 		"configured":   true,
 		"timezone":     time.Now().Format("MST"),
+		"auth_type":    authTypeSummary(authSet),
 	}
 	return json.Marshal(resp)
 }

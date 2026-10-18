@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.0] — 2026-10-18
+
+### Added
+
+- **Live dashboard updates**: near-realtime smart polling via a lightweight `GET /api/changes` revision endpoint (default every 3 s, configurable 3/5/10 s or paused); only the active tab refetches, polling pauses when the tab is hidden or offline, and manual refresh still works.
+- **Request Inspector**: dedicated Requests tab with server-side cursor pagination, filters (status, latency, tokens, cost, model, key, search), and a detail dialog showing the token breakdown, latency/TTFT, and the per-request cost estimate.
+- **Cost Analytics**: estimated API-equivalent USD cost per model/day/request from Models.dev + LiteLLM pricing with historical price snapshots, override support, partial/unpriced coverage status, and USD→VND conversion.
+- **Automatic USD/VND exchange rate**: ExchangeRate-API primary + Fawaz currency-api fallback, cached in SQLite, manual mode override, 24 h lazy refresh.
+- **Model Performance, Usage Comparison, Advanced Charts** (heatmap, top models, distributions, performance trends).
+- **English/Vietnamese** bilingual UI with dark/light themes.
+
+### Changed
+
+- BREAKING: plugin identity rebranded `usage-report` → `cpa-token-analytics` (independent distribution; the official store already contains a different `usage-report` plugin). Management routes now live under `/v0/management/plugins/cpa-token-analytics/`; the dashboard is at `/v0/resource/plugins/cpa-token-analytics/report`.
+- Default SQLite path: `~/.cli-proxy-api/usage-report.sqlite` → `~/.cli-proxy-api/cpa-token-analytics.sqlite`. First launch copies the old database when the new file is absent (the old file is preserved; `db_path` config still overrides).
+- Plugin registration metadata: name `CPA Token Analytics`, author `vuhuynh450`, repository `vuhuynh450/cpa-token-analytics`.
+- Release artifacts renamed `cpa-token-analytics_{ver}_{os}_{arch}.zip` + `checksums.txt` per CLIProxyAPI plugin-store conventions.
+
+### Migration
+
+- Existing users: rename `plugins.configs.usage-report` → `plugins.configs.cpa-token-analytics` in config; see README "Migrating from usage-report".
+
 ## 0.3.4
 
 - Fix Claude input and total tokens to include cache reads and creation; cache creation no longer counts as a cache hit (#14).

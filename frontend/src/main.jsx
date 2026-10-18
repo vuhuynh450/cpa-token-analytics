@@ -7,7 +7,6 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  CircleHelp,
   Database,
   KeyRound,
   Layers,
@@ -18,7 +17,6 @@ import {
   WifiOff,
 } from "lucide-react";
 import { format, subDays } from "date-fns";
-import { zhCN } from "date-fns/locale";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +36,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SegmentedControl } from "@/components/segmented-control";
+import { LanguageSwitcher } from "@/components/language-switcher";
 import {
   Popover,
   PopoverContent,
@@ -55,144 +54,61 @@ import {
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
-import {
-} from "@/components/ui/dialog";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   ChartContainer,
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart";
-import { compact, dateKey, fmt, groups, summarize, trend } from "./analytics";
+import { dateKey, groups, summarize, trend } from "./analytics";
+import { translateBackend } from "./i18n";
+import { I18nProvider, useI18n } from "./i18n/react.jsx";
+import {
+  API_BASE,
+  fetchJSON,
+  readManagementKey,
+} from "./services/api.js";
+import { Metric, useErrorText } from "./components/analytics/shared.jsx";
+import { useLiveUpdates } from "./hooks/use-live-updates.js";
+import { CostOverview } from "./components/analytics/cost-overview.jsx";
+import { ModelPerformance } from "./components/analytics/model-performance.jsx";
+import { UsageComparison } from "./components/analytics/usage-comparison.jsx";
+import { ChartsTab } from "./components/analytics/charts-tab.jsx";
+import { PricingSettings } from "./components/pricing/pricing-settings.jsx";
+import { RequestInspector } from "./components/requests/request-inspector.jsx";
 import "./index.css";
 
-const chartConfig = {
-  cache: { label: "缓存输入", color: "var(--chart-1)" },
-  net: { label: "净输入", color: "var(--chart-2)" },
-  output: { label: "输出", color: "var(--chart-3)" },
-};
+// Re-exported so analytics components can share the same auth/base helpers.
+export { API_BASE, readManagementKey };
+
 const initialRange = () => {
   const today = new Date();
   return { from: today, to: today };
 };
-function Help({ children }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-5 text-muted-foreground"
-          aria-label="指标说明"
-        >
-          <CircleHelp className="size-3.5" />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent className="max-w-72">{children}</TooltipContent>
-    </Tooltip>
-  );
-}
-function useCountUp(target, duration = 550) {
-  const [value, setValue] = useState(target);
-  const prev = useRef(target);
-  useEffect(() => {
-    const from = prev.current;
-    prev.current = target;
-    if (from === target) {
-      setValue(target);
-      return;
-    }
-    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
-      setValue(target);
-      return;
-    }
-    let raf;
-    const start = performance.now();
-    const tick = (now) => {
-      const progress = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(from + (target - from) * eased);
-      if (progress < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [target, duration]);
-  return value;
-}
 
-function Metric({ label, value, raw, format, detail, help, loading }) {
-  const animated = useCountUp(typeof raw === "number" ? raw : 0);
-  const display =
-    typeof raw === "number" && format ? format(animated) : value;
-  return (
-    <Card className="gap-3 shadow-none">
-      <CardHeader className="flex flex-row items-center justify-between pb-0">
-        <CardDescription>{label}</CardDescription>
-        <Help>{help}</Help>
-      </CardHeader>
-      <CardContent>
-        {loading ? (
-          <Skeleton className="h-9 w-28" />
-        ) : (
-          <div
-            className="text-2xl sm:text-3xl font-semibold tracking-tight tabular-nums"
-            title={String(value)}
-          >
-            {display}
-          </div>
-        )}
-        <p className="mt-2 text-xs text-muted-foreground">{detail}</p>
-      </CardContent>
-    </Card>
-  );
-}
-const API_BASE = "/v0/management/plugins/usage-report/api";
-const KEY_PROMPT =
-  "请返回 CPA 管理中心重新登录并勾选“记住密码”，然后刷新本页面。";
+const NAV_TABS = [
+  "overview",
+  "cost",
+  "performance",
+  "compare",
+  "charts",
+  "requests",
+  "pricing",
+];
 
-function xorBytes(bytes, keyBytes) {
-  const output = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) {
-    output[i] = bytes[i] ^ keyBytes[i % keyBytes.length];
-  }
-  return output;
-}
-
-// Read the CPA management panel session from same-origin localStorage,
-// following the secure-storage format used across the CPA plugin ecosystem.
-function decodeCPAStorage(raw) {
-  if (!raw) return null;
-  const prefix = "enc::v1::";
-  let text = raw;
-  if (text.startsWith(prefix)) {
-    const binary = atob(text.slice(prefix.length));
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const storageKey = `cli-proxy-api-webui::secure-storage|${location.host}|${navigator.userAgent}`;
-    text = new TextDecoder().decode(
-      xorBytes(bytes, new TextEncoder().encode(storageKey)),
-    );
-  }
-  return JSON.parse(text);
-}
-
-function readManagementKey() {
-  try {
-    const parsed = decodeCPAStorage(localStorage.getItem("cli-proxy-auth"));
-    const state = parsed && parsed.state ? parsed.state : parsed;
-    const value = state && state.managementKey;
-    return typeof value === "string" ? value.trim() : "";
-  } catch {
-    return "";
-  }
-}
+// Which quick preset a stored date range corresponds to (1/7/30), or 0 for
+// a custom range. Detection is date-based: the range must still end today.
+const quickDays = (r) => {
+  if (!r?.from || !r?.to || dateKey(r.to) !== dateKey(new Date())) return 0;
+  const from = dateKey(r.from);
+  if (from === dateKey(r.to)) return 1;
+  if (from === dateKey(subDays(new Date(), 6))) return 7;
+  if (from === dateKey(subDays(new Date(), 29))) return 30;
+  return 0;
+};
 
 function App() {
+  const { locale, t, dateFnsLocale, fmt, compact } = useI18n();
   const [range, setRange] = useState(initialRange),
     [draft, setDraft] = useState(initialRange),
     [calendarOpen, setCalendarOpen] = useState(false),
@@ -204,6 +120,8 @@ function App() {
     [busy, setBusy] = useState(false),
     [query, setQuery] = useState(""),
     [tab, setTab] = useState("model"),
+    [nav, setNav] = useState("overview"),
+    [refetch, setRefetch] = useState(0),
     [page, setPage] = useState(0),
     [sort, setSort] = useState("tokens"),
     [dark, setDark] = useState(
@@ -218,16 +136,9 @@ function App() {
     const id = ++generation.current;
     setBusy(true);
     try {
-      const key = readManagementKey();
-      if (!key) throw Error(KEY_PROMPT);
-      const r = await fetch(
-        `${API_BASE}/usage?start=${dateKey(range.from)}&end=${dateKey(range.to)}&bucket=${bucket}`,
-        { headers: { Authorization: `Bearer ${key}` } },
+      const d = await fetchJSON(
+        `/usage?start=${dateKey(range.from)}&end=${dateKey(range.to)}&bucket=${bucket}`,
       );
-      if (r.status === 401 || r.status === 403) throw Error(KEY_PROMPT);
-      if (!r.ok) throw Error(`服务返回 ${r.status}`);
-      const d = await r.json();
-      if (d.error) throw Error(d.error);
       if (id === generation.current) {
         setData(d);
         setError("");
@@ -241,16 +152,26 @@ function App() {
       }
     }
   }
+  // Live updates: a revision change refreshes the active view. When a
+  // quick preset (Today/7d/30d) spans a midnight rollover, its stored dates
+  // go stale — recompute them first so "today" keeps meaning today; custom
+  // ranges are never rewritten.
+  const onNewData = () => {
+    if (dateKey(range.to) !== dateKey(new Date())) {
+      setRange((r) => {
+        const d = quickDays(r);
+        return d ? { from: subDays(new Date(), d - 1), to: new Date() } : r;
+      });
+    }
+    setRefetch((v) => v + 1);
+  };
+  const live = useLiveUpdates({ onNewData });
   useEffect(() => {
     load();
-    const timer = setInterval(() => {
-      if (!document.hidden) load();
-    }, 60000);
     return () => {
-      clearInterval(timer);
       generation.current++;
     };
-  }, [range, bucket]);
+  }, [range, bucket, refetch]);
   const events = useMemo(
     () =>
       (data?.events || []).filter((e) => model === "all" || e.model === model),
@@ -299,18 +220,16 @@ function App() {
     data?.configured && data?.collected_at && !data?.collect_err && !error;
   const quick = (days) =>
     setRange({ from: subDays(new Date(), days - 1), to: new Date() });
-  const todayKey = dateKey(new Date());
-  const fromKey = dateKey(range.from);
-  const toKey = dateKey(range.to);
-  const spansToday = toKey === todayKey;
-  const activeQuick =
-    spansToday && fromKey === todayKey
-      ? 1
-      : spansToday && fromKey === dateKey(subDays(new Date(), 6))
-        ? 7
-        : spansToday && fromKey === dateKey(subDays(new Date(), 29))
-          ? 30
-          : 0;
+  const activeQuick = quickDays(range);
+  const chartConfig = useMemo(
+    () => ({
+      cache: { label: t("chart.cachedInput"), color: "var(--chart-1)" },
+      net: { label: t("chart.netInput"), color: "var(--chart-2)" },
+      output: { label: t("chart.output"), color: "var(--chart-3)" },
+    }),
+    [t],
+  );
+  const errorText = useErrorText();
   return (
     <TooltipProvider>
       <div className="min-h-dvh">
@@ -341,12 +260,17 @@ function App() {
                 ) : (
                   <WifiOff className="size-3" />
                 )}
-                {healthy ? "采集正常" : "等待连接"}
+                {healthy
+                  ? t("header.statusHealthy")
+                  : t("header.statusWaiting")}
               </Badge>
+              <LanguageSwitcher />
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label={dark ? "切换浅色" : "切换深色"}
+                aria-label={
+                  dark ? t("header.themeToLight") : t("header.themeToDark")
+                }
                 onClick={() => setDark(!dark)}
               >
                 {dark ? <Sun /> : <Moon />}
@@ -358,33 +282,83 @@ function App() {
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
               <p className="mb-2 text-xs font-medium text-muted-foreground">
-                工作台 / 用量分析
+                {t("hero.crumb")}
               </p>
               <h1 className="text-3xl font-semibold tracking-tight">
-                本地优先，轻量运行。
+                {t("hero.title")}
               </h1>
               <p className="mt-2 text-sm text-muted-foreground">
-                数据留在本机，一个轻量服务看清请求、Token 与模型用量。
+                {t("hero.subtitle")}
               </p>
             </div>
-            <Button
-              variant="outline"
-              onClick={() => load()}
-              disabled={busy}
-            >
-              <RefreshCw className={busy ? "animate-spin" : ""} />
-              {busy ? "刷新中" : "刷新"}
-            </Button>
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <div className="flex items-center gap-2 rounded-md border px-2.5 py-1.5">
+                <span
+                  className={
+                    "size-2 rounded-full " +
+                    (live.status === "live"
+                      ? "bg-primary"
+                      : live.status === "paused"
+                        ? "bg-muted-foreground"
+                        : live.status === "offline"
+                          ? "bg-destructive"
+                          : "animate-pulse bg-amber-500")
+                  }
+                  title={`${t("live.title")}: ${t(`live.${live.status}`)}${
+                    live.lastDataAt
+                      ? ` · ${t("live.lastData", {
+                          time: format(live.lastDataAt, "HH:mm:ss"),
+                        })}`
+                      : ""
+                  }`}
+                />
+                <span className="sr-only">
+                  {t("live.title")}: {t(`live.${live.status}`)}
+                  {live.lastDataAt
+                    ? ` · ${t("live.lastData", {
+                        time: format(live.lastDataAt, "HH:mm:ss"),
+                      })}`
+                    : ""}
+                </span>
+                <Select value={live.mode} onValueChange={live.setMode}>
+                  <SelectTrigger
+                    size="sm"
+                    aria-label={t("live.aria")}
+                    className="h-6! w-auto gap-1 border-0 px-1 text-xs shadow-none dark:bg-transparent dark:hover:bg-transparent"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent align="end">
+                    <SelectItem value="live3">{t("live.every3")}</SelectItem>
+                    <SelectItem value="live5">{t("live.every5")}</SelectItem>
+                    <SelectItem value="live10">{t("live.every10")}</SelectItem>
+                    <SelectItem value="paused">{t("live.paused")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  load();
+                  setRefetch((n) => n + 1);
+                  live.pollNow();
+                }}
+                disabled={busy}
+              >
+                <RefreshCw className={busy ? "animate-spin" : ""} />
+                {busy ? t("actions.refreshing") : t("actions.refresh")}
+              </Button>
+            </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl
-              ariaLabel="时间范围"
+              ariaLabel={t("range.aria")}
               value={activeQuick}
               onChange={quick}
               items={[
-                { label: "今天", value: 1 },
-                { label: "近 7 天", value: 7 },
-                { label: "近 30 天", value: 30 },
+                { label: t("range.today"), value: 1 },
+                { label: t("range.last7"), value: 7 },
+                { label: t("range.last30"), value: 30 },
               ]}
             />
             <Popover
@@ -404,7 +378,7 @@ function App() {
               <PopoverContent align="start" className="w-auto p-0">
                 <Calendar
                   mode="range"
-                  locale={zhCN}
+                  locale={dateFnsLocale}
                   selected={draft}
                   onSelect={(v) => setDraft(v || {})}
                   defaultMonth={range.from}
@@ -414,7 +388,7 @@ function App() {
                 <Separator />
                 <div className="flex items-center justify-between gap-4 p-3">
                   <span className="text-xs text-muted-foreground">
-                    选择开始和结束日期
+                    {t("range.hint")}
                   </span>
                   <Button
                     size="sm"
@@ -424,7 +398,7 @@ function App() {
                       setCalendarOpen(false);
                     }}
                   >
-                    应用
+                    {t("range.apply")}
                   </Button>
                 </div>
               </PopoverContent>
@@ -433,12 +407,12 @@ function App() {
               <SelectTrigger
                 className="w-44 bg-card"
                 size="sm"
-                aria-label="筛选模型"
+                aria-label={t("model.filterAria")}
               >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">全部模型</SelectItem>
+                <SelectItem value="all">{t("model.all")}</SelectItem>
                 {modelNames.map((m) => (
                   <SelectItem key={m} value={m}>
                     {m}
@@ -448,92 +422,166 @@ function App() {
             </Select>
             <span className="ml-auto text-xs text-muted-foreground">
               {data?.collected_at
-                ? "更新于 " + format(new Date(data.collected_at), "HH:mm:ss")
-                : "每 60 秒自动刷新"}
+                ? t("meta.updatedAt", {
+                    time: format(new Date(data.collected_at), "HH:mm:ss"),
+                  })
+                : t("meta.autoRefresh")}
             </span>
           </div>
-          {error && (
+          <div className="overflow-x-auto pb-1">
+            <SegmentedControl
+              ariaLabel={t("nav.aria")}
+              value={nav}
+              onChange={setNav}
+              items={NAV_TABS.map((n) => ({
+                label: t(`nav.${n}`),
+                value: n,
+              }))}
+            />
+          </div>
+          {/* /usage errors belong to the Overview tab; other tabs render
+              their own TabError, so the same failure never shows twice. */}
+          {error && nav === "overview" && (
             <Alert variant="destructive">
               <WifiOff />
-              <AlertTitle>暂时无法获取用量</AlertTitle>
+              <AlertTitle>{t("alerts.errorTitle")}</AlertTitle>
               <AlertDescription>
-                {error}。
-                {data
-                  ? "下方保留上次结果，请重试。"
-                  : "请确认 CLIProxyAPI 与插件运行正常。"}
+                {errorText(error)}.
+                {data ? t("alerts.keepData") : t("alerts.checkService")}
               </AlertDescription>
             </Alert>
           )}
           {data?.configured && data.collect_err && (
             <Alert variant="destructive">
               <WifiOff />
-              <AlertTitle>采集需要关注</AlertTitle>
+              <AlertTitle>{t("alerts.collectTitle")}</AlertTitle>
               <AlertDescription>
-                {data.collect_err}。历史记录仍可查看。
+                {translateBackend(data.collect_err, locale)}.
+                {t("alerts.collectNote")}
               </AlertDescription>
             </Alert>
           )}
+          {nav !== "overview" && (
+            <>
+              {nav === "cost" && (
+                <CostOverview
+                  range={range}
+                  bucket={bucket}
+                  model={model}
+                  refetch={refetch}
+                />
+              )}
+              {nav === "performance" && (
+                <ModelPerformance
+                  range={range}
+                  bucket={bucket}
+                  model={model}
+                  refetch={refetch}
+                />
+              )}
+              {nav === "compare" && (
+                <UsageComparison
+                  range={range}
+                  model={model}
+                  refetch={refetch}
+                />
+              )}
+              {nav === "charts" && (
+                <ChartsTab
+                  range={range}
+                  bucket={bucket}
+                  model={model}
+                  events={events}
+                  refetch={refetch}
+                />
+              )}
+              {nav === "requests" && (
+                <RequestInspector
+                  range={range}
+                  model={model}
+                  models={modelNames}
+                  refetch={refetch}
+                  live={live.revision}
+                />
+              )}
+              {/* Pricing keeps its own sync controls; the poll tick must
+                  not refetch the catalog on every revision bump. */}
+              {nav === "pricing" && <PricingSettings />}
+            </>
+          )}
+          {nav === "overview" && (
+          <>
           <section
-            aria-label="核心指标"
+            aria-label={t("metrics.aria")}
             className="animate-in fade-in slide-in-from-bottom-2 duration-500 grid grid-cols-2 gap-3 lg:grid-cols-4"
           >
             <Metric
-              label="总 Token"
+              label={t("metrics.total.label")}
               value={compact(total)}
               raw={total}
               format={compact}
-              detail={`输入 ${compact(stats.input)} / 输出 ${compact(stats.output)}`}
-              help={`精确值 ${fmt(total)}。输入包含缓存，输出包含推理，不重复累加。`}
+              detail={t("metrics.total.detail", {
+                input: compact(stats.input),
+                output: compact(stats.output),
+              })}
+              help={t("metrics.total.help", { total: fmt(total) })}
               loading={loading}
             />
             <Metric
-              label="请求次数"
+              label={t("metrics.requests.label")}
               value={fmt(stats.n)}
               raw={stats.n}
               format={(v) => fmt(Math.round(v))}
-              detail={`${fmt(groups(events, "model").length)} 个模型参与调用`}
-              help="包含成功、失败和零 Token 请求。"
+              detail={t("metrics.requests.detail", {
+                count: fmt(groups(events, "model").length),
+              })}
+              help={t("metrics.requests.help")}
               loading={loading}
             />
             <Metric
-              label="请求成功率"
-              value={rate === null ? "暂无" : rate + "%"}
+              label={t("metrics.rate.label")}
+              value={rate === null ? t("metrics.rate.none") : rate + "%"}
               raw={rate ?? undefined}
               format={(v) => v.toFixed(1) + "%"}
-              detail={`${fmt(stats.fail)} 次失败 / ${fmt(stats.n - stats.fail)} 次成功`}
-              help="按 CPA 返回的 failed 标记统计，不推断错误原因。"
+              detail={t("metrics.rate.detail", {
+                fail: fmt(stats.fail),
+                ok: fmt(stats.n - stats.fail),
+              })}
+              help={t("metrics.rate.help")}
               loading={loading}
             />
             <Metric
-              label="缓存命中率"
+              label={t("metrics.cache.label")}
               value={
                 stats.input
                   ? ((stats.cache / stats.input) * 100).toFixed(1) + "%"
-                  : "暂无"
+                  : t("metrics.rate.none")
               }
               raw={stats.input ? (stats.cache / stats.input) * 100 : undefined}
               format={(v) => v.toFixed(1) + "%"}
-              detail={`复用 ${compact(stats.cache)} 输入 Token`}
-              help="缓存读取 Token / 输入 Token。缓存是输入的一部分。"
+              detail={t("metrics.cache.detail", {
+                cache: compact(stats.cache),
+              })}
+              help={t("metrics.cache.help")}
               loading={loading}
             />
           </section>
           <Card className="animate-in fade-in slide-in-from-bottom-2 duration-500 [animation-delay:80ms] shadow-none">
             <CardHeader className="flex flex-wrap flex-row items-start justify-between gap-4">
               <div>
-                <CardTitle className="text-base">Token 趋势</CardTitle>
+                <CardTitle className="text-base">{t("chart.title")}</CardTitle>
                 <CardDescription className="mt-1.5">
-                  缓存输入、净输入和输出的堆叠分布
+                  {t("chart.description")}
                 </CardDescription>
               </div>
               <SegmentedControl
-                ariaLabel="聚合粒度"
+                ariaLabel={t("chart.bucketAria")}
                 value={bucket}
                 onChange={setBucket}
                 items={[
-                  { label: "小时", value: "hour" },
-                  { label: "天", value: "day" },
-                  { label: "月", value: "month" },
+                  { label: t("chart.hour"), value: "hour" },
+                  { label: t("chart.day"), value: "day" },
+                  { label: t("chart.month"), value: "month" },
                 ]}
               />
             </CardHeader>
@@ -605,9 +653,9 @@ function App() {
               ) : (
                 <div className="flex h-72 flex-col items-center justify-center gap-3 text-muted-foreground">
                   <Activity className="size-8 opacity-40" />
-                  <p className="text-sm">这个时间范围内，还没有用量。</p>
+                  <p className="text-sm">{t("chart.empty")}</p>
                   <Button variant="outline" size="sm" onClick={() => quick(30)}>
-                    查看近 30 天
+                    {t("chart.viewLast30")}
                   </Button>
                 </div>
               )}
@@ -617,17 +665,19 @@ function App() {
             <CardHeader className="pb-5">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
-                  <CardTitle className="text-base">用量明细</CardTitle>
+                  <CardTitle className="text-base">
+                    {t("details.title")}
+                  </CardTitle>
                   <CardDescription className="mt-1.5">
-                    从模型到每次请求，逐层查看
+                    {t("details.description")}
                   </CardDescription>
                 </div>
                 <div className="relative w-full sm:w-60">
                   <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
                   <Input
                     className="pl-9"
-                    placeholder="搜索模型或 Key"
-                    aria-label="搜索明细"
+                    placeholder={t("details.searchPlaceholder")}
+                    aria-label={t("details.searchAria")}
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                   />
@@ -637,7 +687,7 @@ function App() {
             <div>
               <div className="flex flex-wrap items-center justify-between gap-3 px-6 pb-4">
                 <SegmentedControl
-                  ariaLabel="明细视图"
+                  ariaLabel={t("details.viewAria")}
                   value={tab}
                   onChange={setTab}
                   items={[
@@ -645,7 +695,7 @@ function App() {
                       label: (
                         <>
                           <Layers className="size-3.5" />
-                          按模型
+                          {t("details.tabModel")}
                         </>
                       ),
                       value: "model",
@@ -654,7 +704,7 @@ function App() {
                       label: (
                         <>
                           <KeyRound className="size-3.5" />
-                          按 Key
+                          {t("details.tabKey")}
                         </>
                       ),
                       value: "key",
@@ -663,7 +713,7 @@ function App() {
                       label: (
                         <>
                           <Activity className="size-3.5" />
-                          请求
+                          {t("details.tabRequests")}
                         </>
                       ),
                       value: "requests",
@@ -675,15 +725,21 @@ function App() {
                     <SelectTrigger
                       className="w-36"
                       size="sm"
-                      aria-label="明细排序"
+                      aria-label={t("details.sortAria")}
                     >
                       <ArrowDownUp className="size-3" />
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="tokens">Token 降序</SelectItem>
-                      <SelectItem value="requests">请求数降序</SelectItem>
-                      <SelectItem value="name">名称排序</SelectItem>
+                      <SelectItem value="tokens">
+                        {t("details.sortTokens")}
+                      </SelectItem>
+                      <SelectItem value="requests">
+                        {t("details.sortRequests")}
+                      </SelectItem>
+                      <SelectItem value="name">
+                        {t("details.sortName")}
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 )}
@@ -693,18 +749,25 @@ function App() {
                 <TableHeader>
                   <TableRow>
                     {(tab === "requests"
-                      ? ["时间 / 模型", "Key", "状态", "输入", "缓存", "输出"]
+                      ? [
+                          t("table.timeModel"),
+                          t("table.key"),
+                          t("table.status"),
+                          t("table.input"),
+                          t("table.cache"),
+                          t("table.output"),
+                        ]
                       : [
-                          "模型 / Key",
-                          "请求",
-                          "成功率",
-                          "输入",
-                          "缓存",
-                          "输出",
-                          "总 Token",
+                          t("table.modelKey"),
+                          t("table.requests"),
+                          t("table.success"),
+                          t("table.input"),
+                          t("table.cache"),
+                          t("table.output"),
+                          t("table.totalTokens"),
                         ]
                     ).map((s, i) => (
-                      <TableHead key={s} className={i ? "text-right" : "pl-6"}>
+                      <TableHead key={i} className={i ? "text-right" : "pl-6"}>
                         {s}
                       </TableHead>
                     ))}
@@ -731,13 +794,13 @@ function App() {
                             </div>
                           </TableCell>
                           <TableCell className="text-right font-mono text-xs">
-                            {r.key}
+                            {translateBackend(r.key, locale)}
                           </TableCell>
                           <TableCell className="text-right">
                             <Badge
                               variant={r.failed ? "destructive" : "secondary"}
                             >
-                              {r.failed ? "失败" : "成功"}
+                              {r.failed ? t("table.failed") : t("table.ok")}
                             </Badge>
                           </TableCell>
                         </>
@@ -745,9 +808,9 @@ function App() {
                         <>
                           <TableCell
                             className="max-w-64 truncate pl-6 font-medium"
-                            title={r.name}
+                            title={translateBackend(r.name, locale)}
                           >
-                            {r.name}
+                            {translateBackend(r.name, locale)}
                           </TableCell>
                           <TableCell className="text-right tabular-nums">
                             {fmt(r.n)}
@@ -783,10 +846,10 @@ function App() {
                         className="h-32 text-center text-muted-foreground"
                       >
                         {loading
-                          ? "正在加载明细…"
+                          ? t("details.loading")
                           : query
-                            ? "没有匹配结果，换个关键词试试。"
-                            : "暂无明细"}
+                            ? t("details.noMatch")
+                            : t("details.empty")}
                       </TableCell>
                     </TableRow>
                   )}
@@ -795,13 +858,15 @@ function App() {
             </div>
             <Separator />
             <div className="flex items-center justify-between px-6 py-3 text-xs text-muted-foreground">
-              <span>{fmt(rows.length)} 条记录 · Key 已匿名化</span>
+              <span>
+                {t("details.footer", { count: fmt(rows.length) })}
+              </span>
               <div className="flex items-center gap-2">
                 <Button
                   variant="ghost"
                   size="icon"
                   className="size-7"
-                  aria-label="上一页"
+                  aria-label={t("details.prevPage")}
                   disabled={page === 0}
                   onClick={() => setPage((p) => p - 1)}
                 >
@@ -814,7 +879,7 @@ function App() {
                   variant="ghost"
                   size="icon"
                   className="size-7"
-                  aria-label="下一页"
+                  aria-label={t("details.nextPage")}
                   disabled={page >= maxPage}
                   onClick={() => setPage((p) => p + 1)}
                 >
@@ -826,17 +891,25 @@ function App() {
           <footer className="flex flex-wrap items-center justify-between gap-2 pb-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <Database className="size-3" />
-              本地 SQLite · {data?.timezone || "本机时区"} · v
+              {t("footer.localSqlite")} · {data?.timezone || t("footer.localTimezone")} · v
               {data?.version || "0.1.1"}
             </span>
             <span>
-              输入包含缓存，输出包含推理
-              {data?.skipped ? ` · ${data.skipped} 条无效记录未统计` : ""}
+              {t("footer.note")}
+              {data?.skipped
+                ? ` · ${t("footer.skipped", { count: fmt(data.skipped) })}`
+                : ""}
             </span>
           </footer>
+          </>
+          )}
         </main>
       </div>
     </TooltipProvider>
   );
 }
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <I18nProvider>
+    <App />
+  </I18nProvider>,
+);

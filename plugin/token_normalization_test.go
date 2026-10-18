@@ -100,7 +100,7 @@ func TestTokenNormalization(t *testing.T) {
 			if dedup != hex.EncodeToString(digest[:]) {
 				t.Fatal("protocol metadata changed historical dedup identity")
 			}
-			status, _, body := callMgmt(t, "/v0/management/plugins/usage-report/api/usage", "GET")
+			status, _, body := callMgmt(t, "/v0/management/plugins/cpa-token-analytics/api/usage", "GET")
 			if status != 200 {
 				t.Fatalf("HTTP %d: %s", status, body)
 			}
